@@ -1,0 +1,55 @@
+# ARCO Slack Delivery Bridge
+
+One authenticated JSON request delivers one image to a configured Slack conversation, then posts its headline and caption separately. No frontend or database.
+
+## Setup
+
+1. Create a Slack app in the destination workspace. Under **OAuth & Permissions**, add bot scopes `files:write` and `chat:write`, then install it. Copy the **Bot User OAuth Token** into Vercel's `SLACK_BOT_TOKEN` environment variable. Do not paste tokens into a prompt or commit them.
+2. Open a direct conversation between Favour and the app bot. Use the conversation ID (beginning with `D`) as `SLACK_CHANNEL_ID`. The bot must have access to that conversation. A private channel is also possible after inviting the bot. Do not use Favour's `U...` user ID as the file-sharing channel ID.
+3. Generate a random bearer secret (for example, `openssl rand -hex 32`) and set `BRIDGE_BEARER_TOKEN` in Vercel. Set the three variables for Production. Restrict dashboard access to trusted project members.
+4. Deploy the directory as a Vercel project with the default **Other** framework preset. The root directory is this folder; `api/*.ts` become serverless endpoints. Redeploy after setting variables.
+5. Check `GET https://YOUR_DOMAIN/api/health`. It reports process health, not Slack configuration or delivery success.
+
+## Deliver a post
+
+`POST /api/deliver`, header `Authorization: Bearer <BRIDGE_BEARER_TOKEN>`, `Content-Type: application/json`.
+
+```json
+{
+  "day": "Monday",
+  "subsidiary": "ARCO Worldwide Services",
+  "headline": "Example headline",
+  "caption": "Example caption for review",
+  "visualRationale": "Optional production note",
+  "imageBase64": "<raw PNG, JPEG or WebP bytes encoded as base64, without a data URL prefix>"
+}
+```
+
+One image only, up to 2,800,000 decoded bytes; entire JSON body up to 4,000,000 bytes. Vercel rejects requests above its own 4.5 MB function payload limit. Image type is checked from binary signatures; supplied MIME strings and filenames are ignored. Use a fresh generated image for each request. The bridge does not generate images, wait ten minutes, schedule deliveries, or de-duplicate requests.
+
+Example caller: read a file and send JSON without putting the secret in command history:
+
+```js
+import { readFile } from 'node:fs/promises';
+const imageBase64 = (await readFile('one-image.png')).toString('base64');
+const response = await fetch(process.env.BRIDGE_URL, {
+  method: 'POST',
+  headers: { authorization: `Bearer ${process.env.BRIDGE_BEARER_TOKEN}`, 'content-type': 'application/json' },
+  body: JSON.stringify({ day: 'Monday', subsidiary: 'ARCO Worldwide Services', headline: 'Example headline', caption: 'Example caption', imageBase64 })
+});
+console.log(await response.json());
+```
+
+Successful result: HTTP 200 with `ok:true`, `image.succeeded:true` and `text.succeeded:true`, plus a Slack file ID and message timestamp. Slack's file completion response and message response are checked. Confirm the file and message in the actual conversation for the end-to-end acceptance test.
+
+If Slack file upload or sharing fails, the endpoint returns HTTP 502 and does not post the caption. If the file shares but the caption fails, HTTP 502 reports `image.succeeded:true`, `text.succeeded:false`. **Do not blindly retry a partial delivery**: it could duplicate the file. Inspect the conversation and use the reported request ID/file ID to reconcile. A production scheduler should store its own delivery state and retry only unresolved steps.
+
+Logs contain stage, request ID, Slack file ID or message timestamp, and sanitized error codes. Never log request bodies, bearer tokens, bot tokens, signed upload URLs, or raw Slack responses.
+
+## Acceptance test
+
+Send one generated ARCO image with a test headline and caption. Check the endpoint reports both steps as successful. Open Favour's actual conversation with the app and confirm the image is visible and the separate message follows it. Only then wire the Monday schedule to five separate generation and delivery runs at 10:00, 10:10, 10:20, 10:30 and 10:40 **Africa/Lagos**.
+
+## Local checks
+
+Run `npm install`, `npm run check`, `npm test`. Do not put actual secret values in `.env.example` or the repository.
